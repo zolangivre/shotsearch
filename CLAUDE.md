@@ -16,4 +16,4 @@ Local semantic search over Mac screenshots. CLI in Python 3.12, managed with uv.
 - For manual CLI runs against fixtures, set `SHOTSEARCH_HOME` to a scratch dir and
   `SHOTSEARCH_MODELS` to `~/Library/Application Support/shotsearch/models` to reuse the models.
 - huggingface_hub reads its env vars at import time: see `embeddings._configure_hub`.
-- Modules: `config` (paths), `ocr`, `embeddings`, `db` (SQLite + FTS5 + sqlite-vec), `indexer`, `search`, `cli`.
+- Modules: `config` (paths), `ocr`, `embeddings`, `db` (SQLite + FTS5 + sqlite-vec), `indexer`, `search`, `watcher`, `cli`.

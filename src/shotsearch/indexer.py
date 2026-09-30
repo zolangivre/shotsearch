@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import logging
-import subprocess
+import os
+import plistlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from itertools import batched
@@ -61,18 +63,37 @@ def is_image_file(path: Path) -> bool:
     )
 
 
+_SCREENSHOT_XATTR = b"com.apple.metadata:kMDItemIsScreenCapture"
+_libc = ctypes.CDLL(None, use_errno=True)
+_libc.getxattr.argtypes = [
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+    ctypes.c_void_p,
+    ctypes.c_size_t,
+    ctypes.c_uint32,
+    ctypes.c_int,
+]
+_libc.getxattr.restype = ctypes.c_ssize_t
+
+
 def is_screenshot(path: Path) -> bool:
-    """Ask Spotlight whether macOS flagged this file as a screen capture."""
-    try:
-        out = subprocess.run(
-            ["mdls", "-raw", "-name", "kMDItemIsScreenCapture", str(path)],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.SubprocessError):
+    """Whether macOS flagged this file as a screen capture.
+
+    screencapture stores the flag as an extended attribute, which is what Spotlight
+    reads too. Reading it directly avoids waiting for Spotlight on brand-new files.
+    Python has no getxattr on macOS, hence ctypes.
+    """
+    name = os.fsencode(path)
+    size = _libc.getxattr(name, _SCREENSHOT_XATTR, None, 0, 0, 0)
+    if size <= 0:
         return False
-    return out.stdout.strip() == "1"
+    buf = ctypes.create_string_buffer(size)
+    if _libc.getxattr(name, _SCREENSHOT_XATTR, buf, size, 0, 0) != size:
+        return False
+    try:
+        return bool(plistlib.loads(buf.raw))
+    except plistlib.InvalidFileException:
+        return False
 
 
 def list_images(folder: Path, only_screenshots: bool = False) -> list[Path]:

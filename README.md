@@ -3,13 +3,13 @@
 Find any screenshot on your Mac by describing it — in English or French — without sending a single pixel anywhere.
 
 ```console
-$ shotsearch search "build error"
+$ shotsearch search "erreur de build"
  #  Score  File                                   Text
- 1  2.140  Screenshot 2026-09-12 at 10.41.03.png  … Build failed with 1 error.
+ 1   1.00  Screenshot 2026-09-30 at 16.30.00.png  $ npm run build > vite build … Build failed with 1 error.
 ```
 
-> **Status: early.** Indexing and hybrid search work. Folder watching is next — see the
-> [roadmap](#roadmap).
+> **Status: early.** The command-line tool works end to end: indexing, hybrid search and
+> folder watching. A local server and a menu bar app come next — see the [roadmap](#roadmap).
 
 ## How it works
 
@@ -67,8 +67,10 @@ To have `shotsearch` on your PATH: `uv tool install .`
 ```bash
 shotsearch index                      # your macOS screenshot folder
 shotsearch index --path ~/Downloads   # any folder
-shotsearch index --only-screenshots   # skip images Spotlight doesn't flag as screenshots
+shotsearch index --only-screenshots   # skip images macOS didn't flag as screenshots
 shotsearch index --reindex            # re-process everything
+
+shotsearch watch                      # catch up, then index each new screenshot (Ctrl+C to stop)
 
 shotsearch search "facture octobre" -n 10
 shotsearch search "build failed" --open   # open the best match in Preview
@@ -78,6 +80,11 @@ shotsearch stats
 ```
 
 PNG, JPEG and HEIC are supported. Unreadable files are reported and skipped.
+
+`watch` handles the way macOS saves screenshots (a hidden temporary file that is then
+renamed) and waits until a file stops growing before indexing it. A new screenshot is
+searchable about a second after it's taken. `--only-screenshots` reads the flag macOS
+stores on each screenshot, so it works on brand-new files too.
 
 ## Privacy
 
@@ -98,6 +105,7 @@ PNG, JPEG and HEIC are supported. Unreadable files are reported and skipped.
   would help, at the cost of size.
 - **The first search in a shell takes a few seconds** while the models load. The planned
   local server will keep them in memory.
+- `watch` runs in the foreground; it isn't installed as a login item yet.
 - macOS and Apple Silicon only: OCR relies on the Vision framework.
 
 ## Development
@@ -114,7 +122,7 @@ uv run ruff check . && uv run ruff format .
 - [x] OCR + full-text search, incremental indexing
 - [x] Multilingual embeddings: image (SigLIP 2) and OCR text (multilingual-e5), stored with sqlite-vec
 - [x] Hybrid search with reciprocal rank fusion
-- [ ] `watch` mode: index new screenshots as they're taken
+- [x] `watch` mode: index new screenshots as they're taken
 - [ ] Local FastAPI server
 - [ ] SwiftUI menu bar app
 

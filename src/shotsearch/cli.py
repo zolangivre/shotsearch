@@ -14,10 +14,10 @@ from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.table import Table
 
-from shotsearch import config, embeddings
+from shotsearch import config, embeddings, watcher
 from shotsearch.db import HIGHLIGHT_END, HIGHLIGHT_START, Database
 from shotsearch.embeddings import IMAGE_MODEL, TEXT_MODEL
-from shotsearch.indexer import Indexer, ModelChangedError
+from shotsearch.indexer import Indexer, IndexReport, ModelChangedError
 from shotsearch.search import FTS, IMAGE_VEC, RRF_K, SIGNALS, TEXT_VEC, best_possible_score
 from shotsearch.search import search as run_search
 
@@ -33,6 +33,11 @@ app = typer.Typer(
 console = Console()
 
 _SIGNAL_LABELS = {FTS: "BM25", TEXT_VEC: "OCR meaning", IMAGE_VEC: "Image"}
+
+_OnlyScreenshots = Annotated[
+    bool,
+    typer.Option("--only-screenshots", help="Skip images macOS didn't flag as screenshots."),
+]
 
 
 def _open_db() -> Database:
@@ -104,32 +109,88 @@ def index(
         typer.Option("--path", help="Folder to index. Default: macOS screenshot folder."),
     ] = None,
     reindex: Annotated[bool, typer.Option("--reindex", help="Re-process every image.")] = False,
-    only_screenshots: Annotated[
-        bool,
-        typer.Option(
-            "--only-screenshots", help="Skip images Spotlight doesn't flag as screenshots."
-        ),
-    ] = False,
+    only_screenshots: _OnlyScreenshots = False,
 ) -> None:
     """Index new and modified images in a folder."""
+    folder = _resolve_folder(path)
+    embedder = _load_embedder()
+    with _open_db() as db:
+        report = _index_folder(db, embedder, folder, reindex, only_screenshots)
+    _print_report(report)
+
+
+@app.command()
+def watch(
+    path: Annotated[
+        Path | None,
+        typer.Option("--path", help="Folder to watch. Default: macOS screenshot folder."),
+    ] = None,
+    only_screenshots: _OnlyScreenshots = False,
+) -> None:
+    """Index screenshots as soon as they're taken. Stop with Ctrl+C."""
+    folder = _resolve_folder(path)
+    embedder = _load_embedder()
+    with _open_db() as db:
+        # Catch up on anything added while nothing was watching.
+        _print_report(_index_folder(db, embedder, folder, False, only_screenshots))
+        indexer = Indexer(db, embedder)
+
+        def on_indexed(paths: list[Path], report: IndexReport) -> None:
+            failed = {p for p, _ in report.failed}
+            stamp = dt.datetime.now().strftime("%H:%M:%S")
+            for p in paths:
+                if p in failed:
+                    continue
+                row = db.get_by_path(str(p))
+                words = len(row["ocr_text"].split()) if row else 0
+                console.print(f"[dim]{stamp}[/] [green]+[/] {escape(p.name)} [dim]{words} words[/]")
+            for p, reason in report.failed:
+                console.print(
+                    f"[dim]{stamp}[/] [red]✗[/] {escape(p.name)} [dim]{escape(reason)}[/]"
+                )
+            db.set_meta("last_indexed_at", str(dt.datetime.now().timestamp()))
+
+        def on_removed(paths: list[Path]) -> None:
+            stamp = dt.datetime.now().strftime("%H:%M:%S")
+            for p in paths:
+                console.print(f"[dim]{stamp}[/] [yellow]-[/] {escape(p.name)}")
+
+        def on_ready() -> None:
+            console.print(f"Watching [bold]{_pretty_path(folder)}[/]. Press Ctrl+C to stop.")
+
+        try:
+            watcher.watch(
+                folder,
+                indexer,
+                only_screenshots=only_screenshots,
+                on_ready=on_ready,
+                on_indexed=on_indexed,
+                on_removed=on_removed,
+            )
+        except KeyboardInterrupt:
+            console.print("Stopped.")
+
+
+def _resolve_folder(path: Path | None) -> Path:
     folder = (path or config.default_screenshot_dir()).expanduser()
     if not folder.is_dir():
-        console.print(f"[red]Not a folder:[/] {folder}")
+        console.print(f"[red]Not a folder:[/] {escape(str(folder))}")
         raise typer.Exit(1)
+    return folder
 
-    embedder = _load_embedder()
+
+def _index_folder(
+    db: Database, embedder: Embedder, folder: Path, reindex: bool, only_screenshots: bool
+) -> IndexReport:
     console.print(f"Indexing [bold]{_pretty_path(folder)}[/]")
-    with (
-        _open_db() as db,
-        Progress(
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeRemainingColumn(),
-            console=console,
-            transient=True,
-        ) as progress,
-    ):
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
         task = progress.add_task("Scanning…", total=None)
 
         def on_start(total: int) -> None:
@@ -150,8 +211,11 @@ def index(
             progress.stop()
             console.print(f"[yellow]{escape(str(exc))}[/]")
             raise typer.Exit(1) from exc
-        db.set_meta("last_indexed_at", str(dt.datetime.now().timestamp()))
+    db.set_meta("last_indexed_at", str(dt.datetime.now().timestamp()))
+    return report
 
+
+def _print_report(report: IndexReport) -> None:
     console.print(
         f"[green]{report.added} added[/], {report.updated} updated, "
         f"{report.unchanged} unchanged, {report.removed} removed"
