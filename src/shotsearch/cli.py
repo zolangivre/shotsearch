@@ -6,7 +6,7 @@ import datetime as dt
 import logging
 import subprocess
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import typer
 from rich.console import Console
@@ -14,10 +14,14 @@ from rich.markup import escape
 from rich.progress import BarColumn, MofNCompleteColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.table import Table
 
-from shotsearch import config
+from shotsearch import config, embeddings
 from shotsearch.db import HIGHLIGHT_END, HIGHLIGHT_START, Database
-from shotsearch.indexer import Indexer
+from shotsearch.embeddings import IMAGE_MODEL, TEXT_MODEL
+from shotsearch.indexer import Indexer, ModelChangedError
 from shotsearch.search import search as run_search
+
+if TYPE_CHECKING:
+    from shotsearch.embeddings import Embedder
 
 app = typer.Typer(
     name="shotsearch",
@@ -29,7 +33,16 @@ console = Console()
 
 
 def _open_db() -> Database:
-    return Database(config.db_path())
+    return Database(config.db_path(), TEXT_MODEL.dim, IMAGE_MODEL.dim)
+
+
+def _load_embedder() -> Embedder:
+    try:
+        with console.status("Loading models…"):
+            return embeddings.Embedder()
+    except embeddings.ModelsNotInstalledError as exc:
+        console.print(f"[yellow]{escape(str(exc))}[/]")
+        raise typer.Exit(1) from exc
 
 
 def _human_size(num: float) -> str:
@@ -52,6 +65,36 @@ def _render_snippet(snippet: str) -> str:
 
 
 @app.command()
+def setup() -> None:
+    """Download the models (once) and check that they run."""
+    missing = embeddings.missing_models()
+    if missing:
+        console.print(
+            "Downloading models. [dim]This is the only time shotsearch uses the network.[/]"
+        )
+        for repo in missing:
+            console.print(f"  • {repo}")
+        embeddings.download_models(missing)
+    else:
+        console.print("[green]Models already downloaded.[/]")
+
+    embedder = _load_embedder()
+    from PIL import Image
+
+    with console.status("Checking models…"):
+        image_dim = embedder.embed_images([Image.new("RGB", (64, 64), "white")]).shape[1]
+        text_dim = embedder.embed_passages(["hello"]).shape[1]
+        query_dim = embedder.embed_image_query("bonjour").shape[0]
+    assert image_dim == query_dim == IMAGE_MODEL.dim and text_dim == TEXT_MODEL.dim
+    console.print(f"[green]✓[/] {TEXT_MODEL.repo} [dim]({text_dim} dims)[/]")
+    console.print(f"[green]✓[/] {IMAGE_MODEL.repo} [dim]({image_dim} dims)[/]")
+    console.print(
+        f"Running on [bold]{embedder.device}[/]. "
+        f"Models stored in [dim]{_pretty_path(config.models_dir())}[/]"
+    )
+
+
+@app.command()
 def index(
     path: Annotated[
         Path | None,
@@ -71,6 +114,7 @@ def index(
         console.print(f"[red]Not a folder:[/] {folder}")
         raise typer.Exit(1)
 
+    embedder = _load_embedder()
     console.print(f"Indexing [bold]{_pretty_path(folder)}[/]")
     with (
         _open_db() as db,
@@ -86,23 +130,29 @@ def index(
         task = progress.add_task("Scanning…", total=None)
 
         def on_start(total: int) -> None:
-            progress.update(task, description="OCR", total=total)
+            progress.update(task, description="Indexing", total=total)
 
         def on_file(p: Path) -> None:
-            progress.update(task, advance=1, description=f"OCR {escape(p.name[:40])}")
+            progress.update(task, advance=1, description=escape(p.name[:40]))
 
-        report = Indexer(db).index_folder(
-            folder,
-            reindex=reindex,
-            only_screenshots=only_screenshots,
-            on_start=on_start,
-            on_file=on_file,
-        )
+        try:
+            report = Indexer(db, embedder).index_folder(
+                folder,
+                reindex=reindex,
+                only_screenshots=only_screenshots,
+                on_start=on_start,
+                on_file=on_file,
+            )
+        except ModelChangedError as exc:
+            progress.stop()
+            console.print(f"[yellow]{escape(str(exc))}[/]")
+            raise typer.Exit(1) from exc
         db.set_meta("last_indexed_at", str(dt.datetime.now().timestamp()))
 
     console.print(
         f"[green]{report.added} added[/], {report.updated} updated, "
         f"{report.unchanged} unchanged, {report.removed} removed"
+        + (f", {report.embedded} embedded" if report.embedded else "")
         + (f", [red]{len(report.failed)} failed[/]" if report.failed else "")
     )
     for failed_path, reason in report.failed:
@@ -153,12 +203,18 @@ def stats() -> None:
     """Show what's in the index."""
     with _open_db() as db:
         count = db.count()
+        embedded = db.vector_count()
         size = db.size_on_disk()
         last = db.get_meta("last_indexed_at")
+        models = db.vector_models()
 
     table = Table(show_header=False, box=None)
     table.add_row("Images indexed", f"[bold]{count}[/]")
+    if embedded < count:
+        table.add_row("With embeddings", f"[yellow]{embedded}[/]  [dim]run shotsearch index[/]")
     table.add_row("Database", f"{_human_size(size)}  [dim]{_pretty_path(config.db_path())}[/]")
+    if models:
+        table.add_row("Models", f"{models[0]}\n{models[1]}")
     if last:
         when = dt.datetime.fromtimestamp(float(last)).strftime("%Y-%m-%d %H:%M")
         table.add_row("Last indexed", when)

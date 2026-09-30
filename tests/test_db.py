@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from shotsearch.db import HIGHLIGHT_START, Database, ImageRecord, fts_query
+from shotsearch.db import HIGHLIGHT_START, SCHEMA_VERSION, Database, ImageRecord, fts_query
 
 
 def record(path: str, text: str, sha: str = "abc") -> ImageRecord:
@@ -12,7 +12,7 @@ def record(path: str, text: str, sha: str = "abc") -> ImageRecord:
 
 
 def test_schema_and_meta(db: Database) -> None:
-    assert db.get_meta("schema_version") == "1"
+    assert db.get_meta("schema_version") == SCHEMA_VERSION
     db.set_meta("k", "v1")
     db.set_meta("k", "v2")
     assert db.get_meta("k") == "v2"

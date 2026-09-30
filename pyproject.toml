@@ -13,10 +13,14 @@ classifiers = [
     "Environment :: Console",
 ]
 dependencies = [
+    "huggingface-hub>=1.33.0",
     "ocrmac>=1.0.1",
     "pillow>=12.3.0",
     "pillow-heif>=1.8.0",
     "rich>=15.0.0",
+    "sqlite-vec>=0.1.9",
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
     "typer>=0.27.2",
 ]
 
