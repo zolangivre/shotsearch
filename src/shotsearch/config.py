@@ -28,7 +28,13 @@ def db_path() -> Path:
 
 
 def models_dir() -> Path:
-    return home() / "models"
+    """Model cache. Override with SHOTSEARCH_MODELS to share it between data dirs."""
+    override = os.environ.get("SHOTSEARCH_MODELS")
+    return Path(override).expanduser() if override else home() / "models"
+
+
+def default_models_dir() -> Path:
+    return Path.home() / "Library" / "Application Support" / APP_NAME / "models"
 
 
 def default_screenshot_dir() -> Path:

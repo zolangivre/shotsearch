@@ -38,19 +38,24 @@ _SIGLIP_TEXT_LEN = 64
 _E5_MAX_LEN = 512
 
 
-def _configure_hub(offline: bool) -> None:
+def _configure_hub() -> None:
+    """Point Hugging Face at our cache, offline by default.
+
+    huggingface_hub reads these variables once, at import time, so this must run
+    before it is imported. Loading code also passes local_files_only=True, so the
+    models never hit the network even if the hub was imported elsewhere first.
+    """
     os.environ["HF_HOME"] = str(models_dir())
     os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
-    if offline:
-        os.environ["HF_HUB_OFFLINE"] = "1"
-    else:
-        os.environ.pop("HF_HUB_OFFLINE", None)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ.setdefault("HF_HUB_VERBOSITY", "error")
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 
 def missing_models() -> list[str]:
     """Repos not yet in the local cache. Never touches the network."""
-    _configure_hub(offline=True)
+    _configure_hub()
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import LocalEntryNotFoundError
 
@@ -67,12 +72,15 @@ def missing_models() -> list[str]:
 
 def download_models(repos: Sequence[str]) -> None:
     """Fetch models into the local cache: the one network access shotsearch makes."""
-    _configure_hub(offline=False)
-    from huggingface_hub import snapshot_download
+    _configure_hub()
+    from huggingface_hub import constants, snapshot_download
 
-    for repo in repos:
-        snapshot_download(repo, allow_patterns=_ALLOW, ignore_patterns=_IGNORE)
-    _configure_hub(offline=True)
+    constants.HF_HUB_OFFLINE = False
+    try:
+        for repo in repos:
+            snapshot_download(repo, allow_patterns=_ALLOW, ignore_patterns=_IGNORE)
+    finally:
+        constants.HF_HUB_OFFLINE = True
 
 
 class ModelsNotInstalledError(RuntimeError):
@@ -116,17 +124,21 @@ class Embedder:
         missing = missing_models()
         if missing:
             raise ModelsNotInstalledError(missing)
-        _configure_hub(offline=True)
 
         import torch
         from transformers import AutoModel, AutoProcessor, AutoTokenizer
+        from transformers.utils import logging as hf_logging
 
+        hf_logging.disable_progress_bar()
+        local = {"local_files_only": True}
         self._torch = torch
         self.device = device_name()
-        self._text_tok = AutoTokenizer.from_pretrained(TEXT_MODEL.repo)
-        self._text_model = AutoModel.from_pretrained(TEXT_MODEL.repo).to(self.device).eval()
-        self._image_proc = AutoProcessor.from_pretrained(IMAGE_MODEL.repo)
-        self._image_model = AutoModel.from_pretrained(IMAGE_MODEL.repo).to(self.device).eval()
+        self._text_tok = AutoTokenizer.from_pretrained(TEXT_MODEL.repo, **local)
+        self._text_model = AutoModel.from_pretrained(TEXT_MODEL.repo, **local)
+        self._text_model = self._text_model.to(self.device).eval()
+        self._image_proc = AutoProcessor.from_pretrained(IMAGE_MODEL.repo, **local)
+        self._image_model = AutoModel.from_pretrained(IMAGE_MODEL.repo, **local)
+        self._image_model = self._image_model.to(self.device).eval()
 
     # -- e5: OCR text -------------------------------------------------------
 
