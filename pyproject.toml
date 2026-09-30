@@ -1,0 +1,47 @@
+[project]
+name = "shotsearch"
+version = "0.1.0"
+description = "Local semantic search for your Mac screenshots. Nothing leaves your machine."
+readme = "README.md"
+license = "MIT"
+authors = [
+    { name = "Zolan Givre", email = "zolannp2602@gmail.com" }
+]
+requires-python = ">=3.12"
+classifiers = [
+    "Operating System :: MacOS",
+    "Environment :: Console",
+]
+dependencies = [
+    "ocrmac>=1.0.1",
+    "pillow>=12.3.0",
+    "pillow-heif>=1.8.0",
+    "rich>=15.0.0",
+    "typer>=0.27.2",
+]
+
+[project.scripts]
+shotsearch = "shotsearch.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["SIM905"]  # word lists read better as a split string
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: needs the ML models (run `shotsearch setup` first)"]
+addopts = "-m 'not slow'"
