@@ -139,6 +139,13 @@ class Embedder:
         self._image_proc = AutoProcessor.from_pretrained(IMAGE_MODEL.repo, **local)
         self._image_model = AutoModel.from_pretrained(IMAGE_MODEL.repo, **local)
         self._image_model = self._image_model.to(self.device).eval()
+        # SigLIP is trained as a binary "does this text match this image" classifier.
+        self._logit_scale = float(self._image_model.logit_scale.exp())
+        self._logit_bias = float(self._image_model.logit_bias)
+
+    def image_match_probability(self, cosine: float) -> float:
+        """SigLIP's calibrated probability that a text describes an image."""
+        return float(1.0 / (1.0 + np.exp(-(self._logit_scale * cosine + self._logit_bias))))
 
     # -- e5: OCR text -------------------------------------------------------
 

@@ -18,6 +18,7 @@ from shotsearch import config, embeddings
 from shotsearch.db import HIGHLIGHT_END, HIGHLIGHT_START, Database
 from shotsearch.embeddings import IMAGE_MODEL, TEXT_MODEL
 from shotsearch.indexer import Indexer, ModelChangedError
+from shotsearch.search import FTS, IMAGE_VEC, RRF_K, SIGNALS, TEXT_VEC, best_possible_score
 from shotsearch.search import search as run_search
 
 if TYPE_CHECKING:
@@ -30,6 +31,8 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+_SIGNAL_LABELS = {FTS: "BM25", TEXT_VEC: "OCR meaning", IMAGE_VEC: "Image"}
 
 
 def _open_db() -> Database:
@@ -166,33 +169,67 @@ def search(
     open_first: Annotated[
         bool, typer.Option("--open", help="Open the best match in Preview.")
     ] = False,
+    explain: Annotated[
+        bool, typer.Option("--explain", help="Show each result's rank in every signal.")
+    ] = False,
+    rrf_k: Annotated[
+        int, typer.Option("--rrf-k", min=1, help="RRF constant: higher flattens rank differences.")
+    ] = RRF_K,
 ) -> None:
-    """Search indexed screenshots."""
+    """Search indexed screenshots.
+
+    Score is 1.00 when all signals (full text, OCR meaning, image content) rank a
+    screenshot first.
+    """
     with _open_db() as db:
         if db.count() == 0:
             console.print("[yellow]The index is empty.[/] Run [bold]shotsearch index[/] first.")
             raise typer.Exit(1)
-        results = run_search(db, query, limit)
+        embedder = None
+        if embeddings.missing_models():
+            console.print("[yellow]Models not installed: full-text search only.[/]")
+        elif db.vector_count() == 0:
+            console.print("[yellow]No embeddings yet: full-text search only.[/]")
+        else:
+            embedder = _load_embedder()
+        results = run_search(db, query, limit, embedder, k=rrf_k)
 
     if not results:
         console.print("No match.")
         raise typer.Exit(0)
 
+    signals = SIGNALS if embedder else (FTS,)
+    best_possible = best_possible_score(signals, rrf_k)
+
     table = Table(show_lines=True, expand=True)
     table.add_column("#", justify="right", style="dim", width=3)
-    table.add_column("Score", justify="right", width=7)
+    table.add_column("Score", justify="right", width=6)
     table.add_column("File", ratio=2, overflow="fold")
     table.add_column("Text", ratio=3)
+    if explain:
+        for name in signals:
+            table.add_column(_SIGNAL_LABELS[name], justify="right", width=12)
     for rank, result in enumerate(results, 1):
         path = Path(result.path)
         link = f"[link=file://{escape(str(path))}]{escape(path.name)}[/link]"
-        table.add_row(
+        row = [
             str(rank),
-            f"{result.score:.3f}",
+            f"{result.score / best_possible:.2f}",
             f"{link}\n[dim]{_pretty_path(path.parent)}[/]",
             _render_snippet(result.snippet) or "[dim]no text[/]",
-        )
+        ]
+        if explain:
+            for name in signals:
+                hit = result.hits.get(name)
+                row.append(f"#{hit.rank} [dim]{hit.score:.3f}[/]" if hit else "[dim]·[/]")
+        table.add_row(*row)
     console.print(table)
+    if explain:
+        console.print(
+            "[dim]BM25: full-text on OCR · OCR meaning: e5 cosine · "
+            "Image: SigLIP match probability. Weighted RRF, k="
+            f"{rrf_k}.[/]"
+        )
 
     if open_first:
         subprocess.run(["open", "-a", "Preview", results[0].path], check=False)

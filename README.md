@@ -8,15 +8,33 @@ $ shotsearch search "build error"
  1  2.140  Screenshot 2026-09-12 at 10.41.03.png  … Build failed with 1 error.
 ```
 
-> **Status: early.** Full-text search over OCR works today. Semantic search (embeddings,
-> hybrid ranking) and folder watching are in progress — see the [roadmap](#roadmap).
+> **Status: early.** Indexing and hybrid search work. Folder watching is next — see the
+> [roadmap](#roadmap).
 
 ## How it works
 
-1. **OCR** — each image goes through Apple's Vision framework (via [`ocrmac`](https://github.com/straussmaximilian/ocrmac)), in French and English.
-2. **Storage** — metadata and text go into a single SQLite file, indexed with FTS5
-   (accent-insensitive, so `echeance` finds `Échéance`).
-3. **Search** — your query is matched against the OCR text with BM25 ranking.
+```
+screenshot ──► Vision OCR (fr, en) ──► text ──┬─► FTS5 (BM25)            ─┐
+     │                                        └─► multilingual-e5 vectors ├─► weighted RRF ─► results
+     └──────────────────────────────────────────► SigLIP 2 image vector  ─┘
+```
+
+1. **OCR** — each image goes through Apple's Vision framework (via
+   [`ocrmac`](https://github.com/straussmaximilian/ocrmac)), in French and English.
+2. **Embeddings** — the OCR text is embedded with multilingual-e5 (so `erreur de build`
+   can match `Build failed`), and the image itself with SigLIP 2 (so `coucher de soleil`
+   can find a photo with no text at all). Both run on the Apple GPU (`mps`).
+3. **Storage** — metadata, text and vectors live in a single SQLite file: FTS5 for text
+   (accent-insensitive, so `echeance` finds `Échéance`), [sqlite-vec](https://github.com/asg017/sqlite-vec) for vectors.
+4. **Search** — three rankings are fused with reciprocal rank fusion:
+   - **BM25** over the OCR text: exact words.
+   - **OCR meaning**: e5 similarity between your query and the text. Weighted 0.5,
+     because e5-small only barely separates relevant from unrelated text.
+   - **Image**: SigLIP's own calibrated match probability. Images below 1 % don't take
+     part, so unrelated screenshots can't crowd out a photo that clearly matches.
+
+   A score of 1.00 means all three signals ranked the screenshot first. Use `--explain`
+   to see each signal's rank and score.
 
 Indexing is incremental: unchanged files (same size and mtime, or same SHA-256) are
 skipped, and files deleted from disk are dropped from the index.
@@ -54,6 +72,7 @@ shotsearch index --reindex            # re-process everything
 
 shotsearch search "facture octobre" -n 10
 shotsearch search "build failed" --open   # open the best match in Preview
+shotsearch search "coucher de soleil" --explain   # show why each result ranks where it does
 
 shotsearch stats
 ```
@@ -71,6 +90,16 @@ PNG, JPEG and HEIC are supported. Unreadable files are reported and skipped.
 - The index contains the text found in your screenshots, which may include sensitive
   information. It is stored unencrypted, like the screenshots themselves.
 
+## Limitations
+
+- **Cross-language matches are weak when no word is shared.** `meeting moved to thursday`
+  finds an English chat screenshot, but `réunion jeudi` doesn't: multilingual-e5-small
+  ranks it 5th among 25 screenshots and BM25 has nothing to match. A larger text model
+  would help, at the cost of size.
+- **The first search in a shell takes a few seconds** while the models load. The planned
+  local server will keep them in memory.
+- macOS and Apple Silicon only: OCR relies on the Vision framework.
+
 ## Development
 
 ```bash
@@ -84,7 +113,7 @@ uv run ruff check . && uv run ruff format .
 
 - [x] OCR + full-text search, incremental indexing
 - [x] Multilingual embeddings: image (SigLIP 2) and OCR text (multilingual-e5), stored with sqlite-vec
-- [ ] Hybrid search with reciprocal rank fusion
+- [x] Hybrid search with reciprocal rank fusion
 - [ ] `watch` mode: index new screenshots as they're taken
 - [ ] Local FastAPI server
 - [ ] SwiftUI menu bar app
